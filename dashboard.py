@@ -223,25 +223,33 @@ def fetch_eia_storage(api_key: str) -> dict | None:
         cur_date  = cur_row["period"]
         cur_stock = float(cur_row["value"])
 
-        def _inj_near(weeks_back: int, window: int = 2) -> float | None:
-            mask = (df["period"] >= cur_date - timedelta(weeks=weeks_back + window)) & \
-                   (df["period"] <= cur_date - timedelta(weeks=weeks_back - window))
+        def _inj_near(ref_date, weeks_back: int, window: int = 2) -> float | None:
+            """Average injection across all EIA weekly rows within ±window weeks of ref_date."""
+            mask = (df["period"] >= ref_date - timedelta(weeks=weeks_back + window)) & \
+                   (df["period"] <= ref_date - timedelta(weeks=weeks_back - window))
             sub = df[mask]
-            return float(sub.iloc[len(sub) // 2]["inj"]) if len(sub) else None
+            return float(sub["inj"].mean()) if len(sub) else None
 
-        last_yr = _inj_near(52) or last_wk
+        last_yr = _inj_near(cur_date, 52) or last_wk
 
-        avgs = [v for yr in range(1, 6) if (v := _inj_near(yr * 52)) is not None]
+        # True 5-year average: mean of the same-week injection for each of the past 5 years
+        avgs = [v for yr in range(1, 6) if (v := _inj_near(cur_date, yr * 52)) is not None]
         avg5 = float(np.mean(avgs)) if avgs else last_yr
 
-        # 8-week injection history for chart
+        # 8-week injection history — compute per-week 5yr average and last-year value
+        # so the reference lines in the chart reflect the correct seasonal pattern
         hist_rows = []
         for _, r in df.iloc[-9:-1].iterrows():
+            wk_date = r["period"]
+            wk_avgs = [v for yr in range(1, 6)
+                       if (v := _inj_near(wk_date, yr * 52)) is not None]
+            wk_avg5    = float(np.mean(wk_avgs)) if wk_avgs else avg5
+            wk_last_yr = _inj_near(wk_date, 52) or last_yr
             hist_rows.append({
-                "Week": r["period"].strftime("%b %d"),
+                "Week": wk_date.strftime("%b %d"),
                 "Injection_Bcf": round(float(r["inj"]), 1),
-                "Avg5yr_Bcf": round(avg5, 1),
-                "LastYr_Bcf": round(last_yr, 1),
+                "Avg5yr_Bcf": round(wk_avg5, 1),
+                "LastYr_Bcf": round(wk_last_yr, 1),
             })
         hist_rows.append({
             "Week": "Current",
