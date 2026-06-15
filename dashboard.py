@@ -614,7 +614,7 @@ def main():
         st.caption("🛢️ Production/Demand · " + ("🟢 EIA Live" if eia_active else "🟠 Static"))
         st.caption("⚡ Electricity · " + ("🟢 EIA-930 Live" if eia_active else "🟠 Temp Model"))
         st.markdown("---")
-        if st.button("🔄 Refresh Now", use_container_width=True):
+        if st.button("🔄 Refresh Now", width='stretch'):
             st.cache_data.clear()
             st.rerun()
 
@@ -755,7 +755,7 @@ def main():
             ma = prices["Close"].rolling(w).mean()
             fig.add_trace(go.Scatter(x=prices.index, y=ma, name=n,
                                      line=dict(color=c, width=1.5, dash=d)))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with p2:
         st.markdown("**Price Statistics**")
@@ -780,7 +780,7 @@ def main():
         vfig.add_trace(go.Bar(x=prices.index[-7:],
                               y=prices["Volume"].iloc[-7:],
                               marker_color=vcolors))
-        st.plotly_chart(vfig, use_container_width=True)
+        st.plotly_chart(vfig, width='stretch')
 
     # ═════════════════════════════════════════════════════════════════════════
     # SECTION 2 — ELECTRICITY CONSUMPTION
@@ -806,7 +806,7 @@ def main():
         efig.add_hline(y=avg_elec, line_dash="dash", line_color="#f59e0b",
                        annotation_text=f"7-Day Avg: {avg_elec:.0f} GWh",
                        annotation_position="top right")
-        st.plotly_chart(efig, use_container_width=True)
+        st.plotly_chart(efig, width='stretch')
 
     with e2:
         peak_idx = elec_df["GWh"].idxmax()
@@ -819,7 +819,23 @@ def main():
                                    f"({elec_df.loc[low_idx,'GWh']:.0f})")
         trend = "📈 Rising" if elec_df["GWh"].iloc[-1] > elec_df["GWh"].iloc[0] else "📉 Falling"
         st.metric("7-Day Trend",   trend)
-        st.metric("NG Correlation","~0.74 (High)")
+
+        # Real Pearson correlation between daily demand and temperature (when available)
+        corr_txt = "N/A"
+        if weather and "daily" in weather:
+            try:
+                tmax = np.array(weather["daily"]["temperature_2m_max"][:7], dtype=float)
+                tmin = np.array(weather["daily"]["temperature_2m_min"][:7], dtype=float)
+                tmid = (tmax + tmin) / 2
+                gwh  = elec_df["GWh"].to_numpy(dtype=float)
+                n = min(len(tmid), len(gwh))
+                if n >= 3 and np.std(tmid[:n]) > 0 and np.std(gwh[:n]) > 0:
+                    r = float(np.corrcoef(tmid[:n], gwh[:n])[0, 1])
+                    strength = "High" if abs(r) >= 0.6 else "Moderate" if abs(r) >= 0.3 else "Low"
+                    corr_txt = f"{r:+.2f} ({strength})"
+            except Exception:
+                pass
+        st.metric("Demand–Temp Corr", corr_txt)
 
     # ═════════════════════════════════════════════════════════════════════════
     # SECTION 3 — WEATHER FORECAST
@@ -881,7 +897,7 @@ def main():
         wfig.update_yaxes(title_text="°C", row=1, col=1)
         wfig.update_yaxes(title_text="Degree Days", row=2, col=1)
         wfig.update_layout(barmode="relative")
-        st.plotly_chart(wfig, use_container_width=True)
+        st.plotly_chart(wfig, width='stretch')
 
         # Day cards — next 7 days
         wc_map = {0:"☀️",1:"🌤️",2:"⛅",3:"🌥️",45:"🌫️",
@@ -912,8 +928,11 @@ def main():
     # ═════════════════════════════════════════════════════════════════════════
     # SECTION 4 — STORAGE & INJECTION
     # ═════════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="section-hdr">🏭 Natural Gas Storage & Injection Analysis</div>',
-                unsafe_allow_html=True)
+    stock_txt = (f' — <span style="font-size:13px;color:#94a3b8">Total working gas: '
+                 f'{storage["stock"]:,.0f} Bcf · as of {storage["as_of"]}</span>'
+                 if stor_live and "stock" in storage else "")
+    st.markdown(f'<div class="section-hdr">🏭 Natural Gas Storage & Injection Analysis'
+                f'{stock_txt}</div>', unsafe_allow_html=True)
 
     s1, s2 = st.columns([1, 2])
 
@@ -966,7 +985,7 @@ def main():
         ))
         gfig.update_layout(**DARK, height=240, margin=dict(l=20, r=20, t=40, b=10),
                            font={"color": "#e2e8f0"})
-        st.plotly_chart(gfig, use_container_width=True)
+        st.plotly_chart(gfig, width='stretch')
 
     with s2:
         hist_df = storage["history"]
@@ -991,10 +1010,14 @@ def main():
             name="Last Year", mode="lines+markers",
             line=dict(color="#8b5cf6", width=1.8, dash="dot"),
         ))
-        st.plotly_chart(wfig2, use_container_width=True)
+        st.plotly_chart(wfig2, width='stretch')
 
     # ── DAILY INJECTION BREAKDOWN ─────────────────────────────────────────
-    st.markdown("**📅 Daily Injection Breakdown — Current Week**")
+    daily_note = ("estimated daily split of the EIA weekly figure"
+                  if stor_live else "modelled")
+    st.markdown(f"**📅 Daily Injection Breakdown — Current Week** "
+                f"<span style='color:#64748b;font-size:12px'>({daily_note}; "
+                f"EIA reports storage weekly)</span>", unsafe_allow_html=True)
     d1, d2 = st.columns([2, 1])
     daily = storage["daily"]
     with d1:
@@ -1018,14 +1041,14 @@ def main():
             yaxis2=dict(title="Cumulative (Bcf)", overlaying="y",
                         side="right", showgrid=False),
         )
-        st.plotly_chart(dfig, use_container_width=True)
+        st.plotly_chart(dfig, width='stretch')
 
     with d2:
         tbl = daily.copy()
         tbl["Date"] = tbl["Date"].dt.strftime("%a, %b %d")
         tbl["% of Week"] = (daily["Injection_Bcf"] / daily["Injection_Bcf"].sum() * 100).round(1)
         tbl.columns = ["Date", "Injection (Bcf)", "% of Week"]
-        st.dataframe(tbl, use_container_width=True, hide_index=True)
+        st.dataframe(tbl, width='stretch', hide_index=True)
         st.metric("Weekly Total", f"{daily['Injection_Bcf'].sum():.2f} Bcf")
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -1058,7 +1081,7 @@ def main():
                 font=dict(color=c, size=12),
             )
         devfig.update_yaxes(range=[0, ymax])
-        st.plotly_chart(devfig, use_container_width=True)
+        st.plotly_chart(devfig, width='stretch')
 
     with dev2:
         st.markdown("**Deviation Summary**")
@@ -1136,7 +1159,7 @@ def main():
             if pw is not None:
                 ffig.add_trace(go.Scatter(x=pw["period"], y=pw["bcfd"], name="Power Burn",
                                           line=dict(color="#f59e0b", width=1.8, dash="dot")))
-            st.plotly_chart(ffig, use_container_width=True)
+            st.plotly_chart(ffig, width='stretch')
         with fc2:
             st.markdown("**Sector Demand Split (latest)**")
             sectors = {
@@ -1154,7 +1177,7 @@ def main():
             ))
             pie.update_layout(**DARK, height=240, margin=dict(l=0, r=0, t=10, b=0),
                               showlegend=True, legend=dict(font=dict(size=10)))
-            st.plotly_chart(pie, use_container_width=True)
+            st.plotly_chart(pie, width='stretch')
     else:
         st.info("🔑 Add your EIA API key in the sidebar to unlock **real dry production, "
                 "total consumption, and power-burn** data that deterministically drive NG prices.")
@@ -1256,7 +1279,7 @@ def main():
     sdfig.add_hline(y=np.mean(sup_vals + dem_vals), line_dash="dot",
                     line_color="#f59e0b", annotation_text="Avg",
                     annotation_position="top right")
-    st.plotly_chart(sdfig, use_container_width=True)
+    st.plotly_chart(sdfig, width='stretch')
     st.caption(sd_caption)
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -1337,16 +1360,16 @@ def main():
             )
 
     with r2:
-        # 7-day forecast price band
-        rng2 = np.random.default_rng(42)
+        # 7-day deterministic price path derived from the signal score (rec["total"])
         fdates = [datetime.today() + timedelta(days=i) for i in range(8)]
-        slope  = 0.04 if rec["direction"] == "BULLISH" else -0.04 if rec["direction"] == "BEARISH" else 0
-        trend  = np.linspace(0, slope, 8)
-        noise  = np.cumsum(rng2.normal(0, 0.004, 8))
-        fmid   = rec["cur"] * (1 + trend + noise * 0.3)
-        fband  = np.linspace(0.002, 0.018, 8)
-        fhi    = fmid + rec["cur"] * fband
-        flo    = fmid - rec["cur"] * fband
+        # Slope scales with net signal strength: ±0.012/day per signal point, capped
+        per_day = max(-0.018, min(0.018, rec["total"] * 0.006))
+        trend   = np.array([(1 + per_day) ** i for i in range(8)])
+        fmid    = rec["cur"] * trend
+        # Uncertainty band widens with the forecast horizon
+        fband   = np.linspace(0.004, 0.020, 8)
+        fhi     = fmid * (1 + fband)
+        flo     = fmid * (1 - fband)
 
         fcfig = _fig(height=310, margin=dict(l=10, r=10, t=30, b=10),
                      yaxis_title="$/MMBtu", showlegend=False,
@@ -1365,7 +1388,7 @@ def main():
             marker=dict(color="#10b981", size=10, symbol="circle"),
             mode="markers",
         ))
-        st.plotly_chart(fcfig, use_container_width=True)
+        st.plotly_chart(fcfig, width='stretch')
 
     # ── FOOTER ──────────────────────────────────────────────────────────────
     st.markdown("---")
