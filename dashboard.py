@@ -223,31 +223,38 @@ def fetch_eia_storage(api_key: str) -> dict | None:
         cur_date  = cur_row["period"]
         cur_stock = float(cur_row["value"])
 
-        def _inj_near(ref_date, weeks_back: int, window: int = 2) -> float | None:
-            """Average injection across all EIA weekly rows within ±window weeks of ref_date."""
-            mask = (df["period"] >= ref_date - timedelta(weeks=weeks_back + window)) & \
-                   (df["period"] <= ref_date - timedelta(weeks=weeks_back - window))
-            sub = df[mask]
-            return float(sub["inj"].mean()) if len(sub) else None
+        def _inj_year_ago(ref_date, n_years: int, tol_days: int = 10) -> float | None:
+            """Injection in the EIA report week closest to (ref_date − n_years calendar years).
 
-        last_yr = _inj_near(cur_date, 52) or last_wk
+            Calendar-aligned (not a fixed 52-week offset) so it never drifts, and
+            matches EIA's convention of comparing the *same report week* across years.
+            Picks exactly one comparable week per year (no smoothing window, which
+            would bias the estimate during the steep spring/autumn ramp). Returns
+            None if no report week falls within tol_days of the target.
+            """
+            target = ref_date - pd.DateOffset(years=n_years)
+            diffs  = (df["period"] - target).abs()
+            idx    = diffs.idxmin()
+            return float(df.loc[idx, "inj"]) if diffs.loc[idx] <= pd.Timedelta(days=tol_days) else None
 
-        # True 5-year average: mean of the same-week injection for each of the past 5 years
-        avgs = [v for yr in range(1, 6) if (v := _inj_near(cur_date, yr * 52)) is not None]
+        last_yr = _inj_year_ago(cur_date, 1) or last_wk
+
+        # True 5-year average: the same comparable report week for each of the past 5 years
+        avgs = [v for n in range(1, 6) if (v := _inj_year_ago(cur_date, n)) is not None]
         avg5 = float(np.mean(avgs)) if avgs else last_yr
 
-        # 8-week injection history — compute per-week 5yr average and last-year value
-        # so the reference lines in the chart reflect the correct seasonal pattern
+        # 8-week injection history — per-week calendar-aligned 5yr average + last-year
+        # value so the reference lines in the chart track the true seasonal pattern
         hist_rows = []
-        for _, r in df.iloc[-9:-1].iterrows():
-            wk_date = r["period"]
-            wk_avgs = [v for yr in range(1, 6)
-                       if (v := _inj_near(wk_date, yr * 52)) is not None]
+        for _, row in df.iloc[-9:-1].iterrows():
+            wk_date = row["period"]
+            wk_avgs = [v for n in range(1, 6)
+                       if (v := _inj_year_ago(wk_date, n)) is not None]
             wk_avg5    = float(np.mean(wk_avgs)) if wk_avgs else avg5
-            wk_last_yr = _inj_near(wk_date, 52) or last_yr
+            wk_last_yr = _inj_year_ago(wk_date, 1) or last_yr
             hist_rows.append({
                 "Week": wk_date.strftime("%b %d"),
-                "Injection_Bcf": round(float(r["inj"]), 1),
+                "Injection_Bcf": round(float(row["inj"]), 1),
                 "Avg5yr_Bcf": round(wk_avg5, 1),
                 "LastYr_Bcf": round(wk_last_yr, 1),
             })
@@ -691,14 +698,6 @@ def main():
 - Updated: `{now.strftime('%H:%M:%S')}`
 - Auto-refresh: {'ON · ' + interval_label if auto_on else 'OFF'}"""
     )
-    status_ph.markdown(
-        f"""**Status**
-- Prices: {px_badge}
-- Weather: {wx_badge}
-- Storage: {stor_badge}
-- Updated: `{now.strftime('%H:%M:%S')}`
-- Auto-refresh: {'ON · ' + interval_label if auto_on else 'OFF'}"""
-    )
 
     cur_px  = prices["Close"].iloc[-1]
     prev_px = prices["Close"].iloc[-2]
@@ -971,6 +970,12 @@ def main():
                             unsafe_allow_html=True)
 
         # Gauge
+        gauge_min = min(storage["current"], storage["avg5"], storage["last_wk"], storage["last_yr"], 0.0)
+        gauge_max = max(storage["current"], storage["avg5"], storage["last_wk"], storage["last_yr"], 0.0)
+        gauge_pad = max(5.0, (gauge_max - gauge_min) * 0.2)
+        band = max(5.0, abs(storage["avg5"]) * 0.10)
+        band_low = storage["avg5"] - band
+        band_high = storage["avg5"] + band
         gfig = go.Figure(go.Indicator(
             mode="gauge+number+delta",
             value=storage["current"],
@@ -978,12 +983,12 @@ def main():
                    "increasing": {"color": "#10b981"},
                    "decreasing": {"color": "#ef4444"}},
             gauge={
-                "axis": {"range": [0, max(storage["avg5"] * 1.6, storage["current"] * 1.3)],
+                "axis": {"range": [gauge_min - gauge_pad, gauge_max + gauge_pad],
                          "tickcolor": "#94a3b8"},
                 "bar": {"color": "#3b82f6"},
                 "steps": [
-                    {"range": [0, storage["avg5"] * 0.9], "color": "#1a2035"},
-                    {"range": [storage["avg5"] * 0.9, storage["avg5"] * 1.1], "color": "#1e3a5f"},
+                    {"range": [gauge_min - gauge_pad, band_low], "color": "#1a2035"},
+                    {"range": [band_low, band_high], "color": "#1e3a5f"},
                 ],
                 "threshold": {"line": {"color": "#f59e0b", "width": 3},
                               "thickness": 0.75, "value": storage["avg5"]},
@@ -1054,7 +1059,11 @@ def main():
     with d2:
         tbl = daily.copy()
         tbl["Date"] = tbl["Date"].dt.strftime("%a, %b %d")
-        tbl["% of Week"] = (daily["Injection_Bcf"] / daily["Injection_Bcf"].sum() * 100).round(1)
+        wk_total = float(daily["Injection_Bcf"].sum())
+        if abs(wk_total) < 1e-9:
+            tbl["% of Week"] = 0.0
+        else:
+            tbl["% of Week"] = (daily["Injection_Bcf"] / wk_total * 100).round(1)
         tbl.columns = ["Date", "Injection (Bcf)", "% of Week"]
         st.dataframe(tbl, width='stretch', hide_index=True)
         st.metric("Weekly Total", f"{daily['Injection_Bcf'].sum():.2f} Bcf")
@@ -1088,7 +1097,8 @@ def main():
                 text=f"Δ {diff:+.1f} Bcf", showarrow=False,
                 font=dict(color=c, size=12),
             )
-        devfig.update_yaxes(range=[0, ymax])
+        ymin = min(values) * 1.25 if min(values) < 0 else 0
+        devfig.update_yaxes(range=[ymin, ymax])
         st.plotly_chart(devfig, width='stretch')
 
     with dev2:
