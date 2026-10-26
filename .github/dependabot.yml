@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Enable version updates for Python dependencies
+  - package-ecosystem: "pip" # Use "pip" even if you use Pipenv or Poetry
+    directory: "/" # Location of your requirements.txt or pyproject.toml
+    schedule:
+      interval: "daily" # Check for updates weekly (alternatives: daily, monthly)
+    open-pull-requests-limit: 5 # Prevent Dependabot from spamming your PR list
+  
